@@ -1,0 +1,12 @@
+1   Full Graph, PyG & DGL
+	[Arxiv, Reddit, Products, Airways, Arctic25, Oral] Papers?
+	Model {GCN}
+	LR {0.01, 0.001, 0.0001}
+	#Hidden {32, 128, 512}
+	#Layer {2,3,4}
+	Norm {none, left, right, both}
+2 	Subgraph sampling / Clustering: [ClusterGCN, GraphSAINT]
+3	Node sampling: [GraphSAGE]
+	Layer sampling: [FastGCN, LADIES]
+4	Model arch: [GAT, GIN, RGCN]
+5	Link prediction & Graph prediction tasks
