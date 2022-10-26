@@ -316,8 +316,8 @@ class Metagenomic(InMemoryDataset):
 class Net(torch.nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = GCNConv(num_features, 64, cached=False)
-        self.conv2 = GCNConv(64, int(num_classes), cached=False)
+        self.conv1 = GCNConv(num_features, 128, cached=False)
+        self.conv2 = GCNConv(128, int(num_classes), cached=False)
         self.reg_params = self.conv1.parameters()
         self.non_reg_params = self.conv2.parameters()
         self.dropout = args["dropout"]
@@ -462,6 +462,7 @@ ap.add_argument("-b", "--batch_size", type=int, default=20000) # node_budget, ed
 ap.add_argument("-s", "--subgs", type=int, default=30) # number of subgraphs
 ap.add_argument("--lr", type=float, default=0.01)
 ap.add_argument("--dropout", type=float, default=0)
+ap.add_argument("--gpu", type=int, default=0, help="GPU index")
 ap.add_argument("--load", action='store_true') # load processed graph from .pt file
 
 args = vars(ap.parse_args())
@@ -475,12 +476,14 @@ n_subgs = args["subgs"]
 load_from_disk = args["load"]
 walk_len = args["walk_len"]
 lr = args["lr"]
+dr = args["dropout"]
+gpu=args["gpu"]
 print(args)
 
 # Setup output path for log file
 #---------------------------------------------------
 
-fileHandler = logging.FileHandler(output_dir+"/"+"{}_overlap_gcn_{}_{}_{}.log".format(data_name, loader_type, bs, n_subgs))
+fileHandler = logging.FileHandler(output_dir+"/"+"{}_overlap_gcn_{}_{}_{}_{}_{}.log".format(data_name, loader_type, bs, n_subgs, lr, dr))
 #fileHandler = logging.FileHandler(output_dir+"/"+"metagnn_overlap_gcn_saint.log")
 fileHandler.setLevel(logging.INFO)
 fileHandler.setFormatter(formatter)
@@ -545,9 +548,10 @@ elif loader_type == 'rw':
                                          sample_coverage=0,
                                          save_dir='overlap_rw_subgs/')
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device(f'cuda:{gpu}')
 logger.info("Running GNN on: "+str(device))
 model = Net().to(device)
+print(model)
 
 optimizer = torch.optim.Adam([
     dict(params=model.reg_params, weight_decay=5e-4),
