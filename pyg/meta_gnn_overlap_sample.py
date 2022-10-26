@@ -13,6 +13,7 @@ import logging
 import os.path as osp
 from sys import stdout
 
+from tqdm import tqdm
 import numpy as np
 import pickle
 import torch
@@ -28,7 +29,7 @@ from collections import defaultdict
 from bidict import bidict
 
 from torch_geometric.data import ClusterData, ClusterLoader
-from torch_geometric.data import GraphSAINTRandomWalkSampler
+from torch_geometric.data import GraphSAINTRandomWalkSampler,GraphSAINTNodeSampler,GraphSAINTEdgeSampler
 from torch_geometric.data import DataLoader
 from torch_geometric.data import Data
 from torch_geometric.data import InMemoryDataset
@@ -152,6 +153,25 @@ def build_species_map(map_file, graph_file):
     for s in species_set:
         species_map[s] = idx
         idx += 1
+
+def load_stored_graph(name):
+    prefix = f'/scratch/general/nfs1/u1320844/dataset/asplos/{name}_subgs/'
+    adj_full = torch.load(prefix+'adj_full.pt')
+    x_full = torch.load(prefix+'x_full.pt')
+    y_full = torch.load(prefix+'y_full.pt')
+    print(f'{name}, {len(adj_full[0])}, {len(x_full)}, {len(adj_full[0])/len(x_full)}')
+    train_mask_full = torch.load(prefix+'train_mask_full.pt')
+    val_mask_full = torch.load(prefix+'val_mask_full.pt')
+    test_mask_full = torch.load(prefix+'test_mask_full.pt')
+    data = Data()
+    data.edge_index = adj_full
+    data.x = x_full
+    data.y = y_full
+    #data.x.requires_grad = True
+    data.train_mask = train_mask_full
+    data.val_mask = val_mask_full
+    data.test_mask = test_mask_full
+    return data
 
 class Metagenomic(InMemoryDataset):
     r""" Assembly graph built over raw metagenomic data using spades.
@@ -296,56 +316,31 @@ class Metagenomic(InMemoryDataset):
 class Net(torch.nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = GCNConv(dataset.num_features, 64, cached=False)
-        self.conv2 = GCNConv(64, int(dataset.num_classes), cached=False)
-        #self.lin = torch.nn.Linear(int(dataset.num_classes), int(dataset.num_classes))
-
-        #self.conv1 = GATConv(dataset.num_features, 16, heads=2)
-        #self.conv2 = GATConv(16 * 2, int(dataset.num_features))
-        #self.lin = torch.nn.Linear(int(dataset.num_features), int(dataset.num_classes))
-
+        self.conv1 = GCNConv(num_features, 64, cached=False)
+        self.conv2 = GCNConv(64, int(num_classes), cached=False)
         self.reg_params = self.conv1.parameters()
         self.non_reg_params = self.conv2.parameters()
+        self.dropout = args["dropout"]
 
     def forward(self, data):
         x = self.get_emb(data)
-        #x, g = self.get_emb(data)
-        #x = self.lin(x)
         return F.log_softmax(x, dim=1)
 
     def get_emb(self, data):
         #x, edge_index = data.x.float(), data.adj_t
         x, edge_index = data.x.float(), data.edge_index
         x = F.relu(self.conv1(x, edge_index))
-        x = F.dropout(x, training=self.training)
+        x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.conv2(x, edge_index)#, return_attention_weights=True)
-        #x, g = self.conv2(x, edge_index, return_attention_weights=True)
         return x
-        return x, g
 
 def train():
     model.train()
     total_loss = total_examples = 0
-    i = 0
-    for data in loader:
-        print(i, end='-')
-        i += 1
-        print(data.edge_index.shape)
-        #data = T.ToSparseTensor()(data)
+    for data in tqdm(loader):
         data = data.to(device)
-        #print(data.edge_index)
-        #print(data.x.shape)
-        #print(data.y.shape)
-        #print(data.train_mask.sum())
-        #print(data.val_mask.sum())
-        #print(data.test_mask.sum())
-        #exit()
-        #print('*'*20)
-        #print(data)
-        #print('*'*20)
         optimizer.zero_grad()
         out = model(data)
-        #loss = F.nll_loss(out, data.y.long(), reduction='none')
         loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask].long(), reduction='none')
         loss.mean().backward()
         optimizer.step()
@@ -461,9 +456,13 @@ ap = argparse.ArgumentParser()
 ap.add_argument("-i", "--input", required=True, help="path to the input files")
 ap.add_argument("-n", "--name", required=True, help="name of the dataset")
 ap.add_argument("-o", "--output", required=True, help="output directory")
-ap.add_argument("-l", "--loader", type=str, default='s')
-ap.add_argument("-b", "--batch_size", type=int, default=20000)
-ap.add_argument("-s", "--subgs", type=int, default=30)
+ap.add_argument("-l", "--loader", type=str, default='node') # sampler: node/edge/rw
+ap.add_argument("--walk_len", type=int, default=3) # for rw sampler
+ap.add_argument("-b", "--batch_size", type=int, default=20000) # node_budget, edge_budget and num_roots
+ap.add_argument("-s", "--subgs", type=int, default=30) # number of subgraphs
+ap.add_argument("--lr", type=float, default=0.01)
+ap.add_argument("--dropout", type=float, default=0)
+ap.add_argument("--load", action='store_true') # load processed graph from .pt file
 
 args = vars(ap.parse_args())
 
@@ -473,6 +472,9 @@ output_dir = args["output"]
 loader_type = args["loader"]
 bs = args["batch_size"]
 n_subgs = args["subgs"]
+load_from_disk = args["load"]
+walk_len = args["walk_len"]
+lr = args["lr"]
 print(args)
 
 # Setup output path for log file
@@ -495,30 +497,53 @@ logger.info("MetaGNN started")
 
 logger.info("Constructing the overlap graph and node feature vectors")
 
-build_species_map(osp.join(input_dir, data_name, 'raw', species_list_file_name), osp.join(input_dir, data_name, 'raw', overlap_file_name))
-dataset = Metagenomic(root=input_dir, name=data_name)#, transform=T.ToSparseTensor())
-data = dataset[0]
-#data = T.ToSparseTensor()(data)
+if load_from_disk:
+    data = load_stored_graph(data_name)
+    #data = T.ToSparseTensor()(data)
+    num_features = len(data.x[0]) 
+    if data_name == 'airways':
+        num_classes = 25 
+    elif data_name == 'arctic25':
+        num_classes = 33 
+    elif data_name == 'oral':
+        num_classes = 32
+else:
+    build_species_map(osp.join(input_dir, data_name, 'raw', species_list_file_name), osp.join(input_dir, data_name, 'raw', overlap_file_name))
+    dataset = Metagenomic(root=input_dir, name=data_name)#, transform=T.ToSparseTensor())
+    data = dataset[0]
+    num_features = dataset.num_features
+    num_classes = dataset.num_classes
+
 print(data)
 
-#exit()
 logger.info("Graph construction done!")
 elapsed_time = time.time() - start_time
 logger.info("Elapsed time: "+str(elapsed_time)+" seconds")
 
+logger.info(args)
+
 if loader_type == 'c':
     cluster_data = ClusterData(data, num_parts=n_subgs, recursive=False, save_dir=dataset.processed_dir)
     loader = ClusterLoader(cluster_data, batch_size=bs, shuffle=False, num_workers=5)
-elif loader_type == 's':
+elif loader_type == 'node':
+    loader = GraphSAINTNodeSampler(data,
+                                    batch_size=bs,
+                                    num_steps=n_subgs,
+                                    sample_coverage=0,
+                                    save_dir='overlap_node_subgs/')
+elif loader_type == 'edge':
+    loader = GraphSAINTEdgeSampler(data,
+                                    batch_size=bs,
+                                    num_steps=n_subgs,
+                                    sample_coverage=0,
+                                    save_dir='overlap_edge_subgs/')
+elif loader_type == 'rw':
     loader = GraphSAINTRandomWalkSampler(data,
                                          batch_size=bs,
-                                         walk_length=2,
+                                         walk_length=walk_len,
                                          num_steps=n_subgs,
                                          sample_coverage=0,
-                                         save_dir='overlap_subgs/')
-
-full_loader = DataLoader(dataset, batch_size=512, shuffle=True)
-print('Dataloader len:', len(loader))
+                                         save_dir='overlap_rw_subgs/')
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 logger.info("Running GNN on: "+str(device))
@@ -527,33 +552,36 @@ model = Net().to(device)
 optimizer = torch.optim.Adam([
     dict(params=model.reg_params, weight_decay=5e-4),
     dict(params=model.non_reg_params, weight_decay=0)
-], lr=0.01)
+], lr=lr)
 
 logger.info("Training model")
 best_val_acc = test_acc = 0
-total_time =0# time.time()
-for epoch in range(1, 1000):
+total_time =0
+for epoch in range(500):
     ep_st = time.time()
     train()
     total_time += time.time()-ep_st
     train_acc, val_acc, tmp_test_acc = test_full(data)
-    #train_acc, val_acc, tmp_test_acc = test(full_loader)
     if val_acc > best_val_acc:
         best_val_acc = val_acc
         test_acc = tmp_test_acc
     log = 'Dataset:{}, Epoch: {:03d}, Time:{:.4f}, Train: {:.4f}, Val: {:.4f}, Test: {:.4f}'
-    logger.info(log.format(data_name, epoch, total_time, train_acc, best_val_acc, test_acc))
+    logger.info(log.format(data_name, epoch, total_time, train_acc, best_val_acc, tmp_test_acc))
+
 elapsed_time = time.time() - start_time
 # Print elapsed time for the process
 logger.info("Elapsed time: "+str(elapsed_time)+" seconds")
+logger.info(f"Best acc: {test_acc:.4f}")
 
+
+################################################################################################
 # print("Embedding after training for node 0")
-data = data.to(device)
-new_emb, new_weights = model.get_emb(data)
-new_emb_arr = new_emb.detach().to("cpu").numpy()
-new_weights_arr = new_weights[1].detach().to("cpu").numpy()
-np.save(osp.join(input_dir, data_name, 'raw', 'learned_emb.npy'), new_emb_arr)
-np.save(osp.join(input_dir, data_name, 'raw', 'learned_weights.npy'), new_weights_arr)
+# data = data.to(device)
+# new_emb, new_weights = model.get_emb(data)
+# new_emb_arr = new_emb.detach().to("cpu").numpy()
+# new_weights_arr = new_weights[1].detach().to("cpu").numpy()
+# np.save(osp.join(input_dir, data_name, 'raw', 'learned_emb.npy'), new_emb_arr)
+# np.save(osp.join(input_dir, data_name, 'raw', 'learned_weights.npy'), new_weights_arr)
 
 #Print GCN model output
 # output(output_dir, input_dir, data_name)

@@ -266,12 +266,15 @@ if __name__ == '__main__':
         ranks = [i + node_rank * args.nproc_per_node for i in range(nproc)]
     print('ranks is ', ranks, ' nproc is', nproc)
 
-    processes = []
-    for i in range(nproc):
-        p = mp.Process(target=run, args=(ranks[i], world_size, args))
-        atexit.register(kill_proc, p)
-        p.start()
-        processes.append(p)
+    p = mp.Process(target=run, args=(args.local_rank, world_size, args))
+    p.start()
+    p.join()
+   # processes = []
+   # for i in range(nproc):
+   #     p = mp.Process(target=run, args=(ranks[i], world_size, args))
+   #     atexit.register(kill_proc, p)
+   #     p.start()
+   #     processes.append(p)
 
-    for p in processes:
-        p.join()
+   # for p in processes:
+   #     p.join()

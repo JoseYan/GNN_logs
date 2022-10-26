@@ -660,7 +660,7 @@ def run(rank, size, inputs, adj_matrix, data, features, classes, device):
                                     rank, size, group, row_groups, col_groups)
             print("Epoch: {:03d}".format(epoch), flush=True)
             cumulative_time += time.time()-ep_s
-            if len(args.acc_csv)>2:
+            if len(args.acc_csv)>20000:
                 # All-gather outputs to test accuracy
                 output_parts = []
                 # n_per_proc = math.ceil(float(inputs.size(0)) / size)
@@ -683,7 +683,7 @@ def run(rank, size, inputs, adj_matrix, data, features, classes, device):
 
                 outputs = torch.cat(output_parts, dim=0)
 
-                train_acc, val_acc, tmp_test_acc = test(outputs, data, am_pbyp[0].size(1), rank)
+                #train_acc, val_acc, tmp_test_acc = test(outputs, data, am_pbyp[0].size(1), rank)
                 if val_acc > best_val_acc:
                     best_val_acc = val_acc
                     test_acc = tmp_test_acc
@@ -701,7 +701,7 @@ def run(rank, size, inputs, adj_matrix, data, features, classes, device):
         # dist.barrier(group)
         torch.cuda.synchronize(device=device)
         tstop = time.time()
-        total_time[i][rank] = tstop - tstart
+        total_time[0][rank] = tstop - tstart
 
     # Get median runtime according to rank0 and print that run's breakdown
     dist.barrier(group)
@@ -745,8 +745,8 @@ def run(rank, size, inputs, adj_matrix, data, features, classes, device):
         opcomm = op_comm_time[median_idx][rank]/10
         bar = barrier_time[median_idx][rank]/10
         ws = os.environ['WORLD_SIZE']
-        stats = f'CAGNET-1.5D,{graphname},{ws},{total},{comm},{comp},{scomp},{dcomp},{bcast},{red},{opcomm},{bar}\n'
-        with open('stats_orkut_128.csv','a') as f:
+        stats = f'CAGNET-1.5D,{graphname},{ws},{1.0/total},{total},{comm},{comp},{scomp},{dcomp},{bcast},{red},{opcomm},{bar}\n'
+        with open(args.stats,'a') as f:
             f.write(stats)
         print('DOne')
 
@@ -852,7 +852,7 @@ def main():
         num_features = dataset.num_features
         num_classes = dataset.num_classes
     elif graphname == 'com-orkut':
-        edge_index = torch.load('/scratch/general/nfs1/u1320844/dataset/com_orkut/com-orkut.pt')
+        edge_index = torch.load('/scratch/general/nfs1/u1320844/dataset/asplos/com-orkut/adj_full.pt')
         print(f"Done loading coo", flush=True)
         n = 3072441
         n = 3072627
@@ -865,7 +865,7 @@ def main():
         inputs.requires_grad = True
         data.y = data.y.to(device)
     elif graphname == 'web-google':
-        edge_index = torch.load('/scratch/general/nfs1/u1320844/dataset/web_google/web-Google.pt')
+        edge_index = torch.load('/scratch/general/nfs1/u1320844/dataset/asplos/web-google/adj_full.pt')
         print(f"Done loading coo", flush=True)
         n = 916428
         num_features = 256
@@ -877,7 +877,7 @@ def main():
         inputs.requires_grad = True
         data.y = data.y.to(device)
 
-    elif graphname in ['meta', 'arctic25', 'oral']:
+    elif graphname in ['meta', 'arctic25', 'oral','airways']:
         pref = '/scratch/general/nfs1/u1320844/dataset/asplos/{}_subgs/'.format(graphname)
         adj_full = torch.load(pref+'adj_full.pt')
         x_full = torch.load(pref+'x_full.pt')
@@ -900,12 +900,13 @@ def main():
         tmp = {}
         tmp['meta'] = 25
         tmp['oral'] = 32
+        tmp['airways'] = 25 
         tmp['arctic25'] = 33
         num_classes = tmp[graphname]
 
     elif graphname == "Reddit":
         #path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', graphname)
-        path = '/scratch/general/nfs1/u1320844/dataset'
+        path = '/scratch/general/nfs1/u1320844/dataset/reddit'
         dataset = Reddit(path, T.NormalizeFeatures())
         data = dataset[0]
         data = data.to(device)
@@ -1030,6 +1031,7 @@ if __name__ == '__main__':
     parser.add_argument("--download", type=bool)
     parser.add_argument("--csv", type=str, default='')
     parser.add_argument("--acc_csv", type=str, default='log.csv')
+    parser.add_argument("--stats", type=str, default='')
 
     args = parser.parse_args()
     print(args)
