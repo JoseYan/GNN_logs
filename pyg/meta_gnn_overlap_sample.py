@@ -460,6 +460,7 @@ ap.add_argument("-l", "--loader", type=str, default='node') # sampler: node/edge
 ap.add_argument("--walk_len", type=int, default=3) # for rw sampler
 ap.add_argument("-b", "--batch_size", type=int, default=20000) # node_budget, edge_budget and num_roots
 ap.add_argument("-s", "--subgs", type=int, default=30) # number of subgraphs
+ap.add_argument("-e", "--epochs", type=int, default=200) # number of epochs 
 ap.add_argument("--lr", type=float, default=0.01)
 ap.add_argument("--dropout", type=float, default=0)
 ap.add_argument("--gpu", type=int, default=0, help="GPU index")
@@ -477,7 +478,8 @@ load_from_disk = args["load"]
 walk_len = args["walk_len"]
 lr = args["lr"]
 dr = args["dropout"]
-gpu=args["gpu"]
+gpu = args["gpu"]
+epochs = args["epochs"]
 print(args)
 
 # Setup output path for log file
@@ -561,7 +563,7 @@ optimizer = torch.optim.Adam([
 logger.info("Training model")
 best_val_acc = test_acc = 0
 total_time =0
-for epoch in range(500):
+for epoch in range(epochs):
     ep_st = time.time()
     train()
     total_time += time.time()-ep_st
